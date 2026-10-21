@@ -1085,7 +1085,31 @@ class Ispconfig extends Module
                 $service_fields = $this->serviceFieldsToObject($service->fields);
 
                 // Get ISPConfig client ID
-                $client_id = $api->getClientIdByUsername($service_fields->ispconfig_username);
+                $client_id = $api->getClientIdByUsername($service_fields->ispconfig_username ?? '');
+
+                if (!$client_id) {
+                    $this->Input->setErrors(['api' => ['client' => Language::_(
+                        'Ispconfig.!error.api.client_not_found',
+                        true,
+                        $service_fields->ispconfig_username ?? ''
+                    )]]);
+
+                    return;
+                }
+
+                // The limits template applies to the whole ISPConfig client, so only change it
+                // when this client owns no more than one website
+                $site_count = $api->getClientSiteCount($client_id);
+                if ($site_count === false || $site_count > 1) {
+                    $this->Input->setErrors(['api' => ['shared_client' => Language::_(
+                        'Ispconfig.!error.api.shared_client',
+                        true,
+                        $service_fields->ispconfig_username,
+                        $site_count === false ? '?' : $site_count
+                    )]]);
+
+                    return;
+                }
 
                 // Change service package
                 $this->log(
