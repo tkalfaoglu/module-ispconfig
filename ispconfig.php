@@ -147,7 +147,7 @@ class Ispconfig extends Module
 
         // Fetch all packages available for the given server or server group
         $module_row = null;
-        if (isset($vars->module_group) && $vars->module_group == '' || $vars->module_group == 'select') {
+        if ((isset($vars->module_group) && $vars->module_group == '') || ($vars->module_group ?? null) == 'select') {
             if (isset($vars->module_row) && $vars->module_row > 0) {
                 $module_row = $this->getModuleRow($vars->module_row);
             } else {
@@ -159,7 +159,7 @@ class Ispconfig extends Module
             }
         } else {
             // Fetch the 1st server from the list of servers in the selected group
-            $rows = $this->getModuleRows($vars->module_group);
+            $rows = $this->getModuleRows($vars->module_group ?? null);
 
             if (isset($rows[0])) {
                 $module_row = $rows[0];
@@ -423,7 +423,7 @@ class Ispconfig extends Module
     public function addModuleRow(array &$vars)
     {
         $meta_fields = ['server_name', 'host_name', 'port', 'user_name', 'password',
-            'use_ssl', 'account_limit', 'name_servers', 'notes'];
+            'use_ssl', 'account_limit', 'name_servers', 'dns_email', 'dns_template_id', 'notes'];
         $encrypted_fields = ['user_name', 'password'];
 
         // Set unspecified checkboxes
@@ -466,7 +466,7 @@ class Ispconfig extends Module
     public function editModuleRow($module_row, array &$vars)
     {
         $meta_fields = ['server_name', 'host_name', 'port', 'user_name', 'password',
-            'use_ssl', 'account_limit', 'account_count', 'name_servers', 'notes'];
+            'use_ssl', 'account_limit', 'account_count', 'name_servers', 'dns_email', 'dns_template_id', 'notes'];
         $encrypted_fields = ['user_name', 'password'];
 
         // Set unspecified checkboxes
@@ -722,6 +722,9 @@ class Ispconfig extends Module
         $empty_values = ['ispconfig_username', 'ispconfig_password'];
 
         if ($edit) {
+            // The domain cannot be changed when editing, so only validate it if it was submitted
+            $rules['ispconfig_domain']['format']['if_set'] = true;
+
             // If this is an edit and no password given then don't evaluate password
             // since it won't be updated
             if (!array_key_exists('ispconfig_password', $vars) || $vars['ispconfig_password'] == '') {
@@ -826,13 +829,25 @@ class Ispconfig extends Module
         }
 
         // Only provision the service if 'use_module' is true
-        if ($vars['use_module'] == 'true') {
+        if (($vars['use_module'] ?? 'false') == 'true') {
+            // A limits template that allows sub-clients makes this a reseller account. ISPConfig only
+            // creates a reseller (limit_client > 0, Clients module in the panel) when limit_client is
+            // passed to client_add, so take it from the template.
+            $reseller_limit = $this->getTemplateClientLimit($api, $package->meta->package ?? 0);
+            if ($reseller_limit != 0) {
+                $params['limit_client'] = $reseller_limit;
+            }
+
             // Create ISPConfig client
             $masked_params = $params;
             $masked_params['password'] = '***';
             $this->log($row->meta->host_name . '|client_add', serialize($masked_params), 'input', true);
             unset($masked_params);
             $client_id = $this->parseResponse($api->createClient($params));
+
+            if ($this->Input->errors()) {
+                return;
+            }
 
             // Create website in the ISPConfig client
             $this->log($row->meta->host_name . '|sites_web_domain_add', null, 'input', true);
@@ -841,6 +856,10 @@ class Ispconfig extends Module
             if ($this->Input->errors()) {
                 return;
             }
+
+            // Create the DNS zone (only when a DNS zone email is set on the server). A failure here is
+            // logged but does not fail the order: the client and website already exist.
+            $this->addDnsZone($api, $row, $client_id, $vars['ispconfig_domain']);
 
             // Update the number of accounts on the server
             $this->updateAccountCount($row);
@@ -901,8 +920,10 @@ class Ispconfig extends Module
             return;
         }
 
-        // Force domain to lower case
-        $vars['ispconfig_domain'] = strtolower($vars['ispconfig_domain']);
+        // Force domain to lower case, if one was submitted
+        if (isset($vars['ispconfig_domain'])) {
+            $vars['ispconfig_domain'] = strtolower($vars['ispconfig_domain']);
+        }
 
         $service_fields = $this->serviceFieldsToObject($service->fields);
 
@@ -912,7 +933,7 @@ class Ispconfig extends Module
         }
 
         // Only update the service if 'use_module' is true
-        if ($vars['use_module'] == 'true') {
+        if (($vars['use_module'] ?? 'false') == 'true') {
             // Check for fields that changed
             $delta = [];
             foreach ($vars as $key => $value) {
@@ -941,7 +962,8 @@ class Ispconfig extends Module
 
         // Return all the service fields
         $fields = [];
-        $encrypted_fields = ['ispconfig_password'];
+        // KALFA PATCH 2026-10-19: also keep the migrated generic 'password' field encrypted
+        $encrypted_fields = ['ispconfig_password', 'password'];
         foreach ($service_fields as $key => $value) {
             $fields[] = ['key' => $key, 'value' => $value, 'encrypted' => (in_array($key, $encrypted_fields) ? 1 : 0)];
         }
@@ -969,7 +991,9 @@ class Ispconfig extends Module
      */
     public function suspendService($package, $service, $parent_package = null, $parent_service = null)
     {
-        // Nothing to do
+        // KALFA PATCH: switch the client's websites and mailboxes off in ISPConfig
+        $this->kalfaSuspend($service, true);
+        return null;
     }
 
     /**
@@ -992,7 +1016,9 @@ class Ispconfig extends Module
      */
     public function unsuspendService($package, $service, $parent_package = null, $parent_service = null)
     {
-        // Nothing to do
+        // KALFA PATCH: switch the client's websites and mailboxes on in ISPConfig
+        $this->kalfaSuspend($service, false);
+        return null;
     }
 
     /**
@@ -1036,7 +1062,8 @@ class Ispconfig extends Module
                 'input',
                 true
             );
-            $this->parseResponse($api->deleteClient($client_id));
+            // KALFA PATCH 2026-10-15: never delete the ISPConfig client from Blesta; remove it by hand in ISPConfig.
+            // $this->parseResponse($api->deleteClient($client_id));
 
             // Update the number of accounts on the server
             $this->updateAccountCount($row);
@@ -1097,9 +1124,13 @@ class Ispconfig extends Module
                     return;
                 }
 
+                // A reseller template (sub-clients allowed) is meant to cover many websites, so moving
+                // to one is allowed whatever the site count, and limit_client is set from the template
+                $reseller_limit = $this->getTemplateClientLimit($api, $package_to->meta->package);
+
                 // The limits template applies to the whole ISPConfig client, so only change it
                 // when this client owns no more than one website
-                $site_count = $api->getClientSiteCount($client_id);
+                $site_count = $reseller_limit != 0 ? 0 : $api->getClientSiteCount($client_id);
                 if ($site_count === false || $site_count > 1) {
                     $this->Input->setErrors(['api' => ['shared_client' => Language::_(
                         'Ispconfig.!error.api.shared_client',
@@ -1124,6 +1155,7 @@ class Ispconfig extends Module
                         $client_id,
                         [
                             'template_master' => $package_to->meta->package,
+                            'limit_client' => $reseller_limit,
                             'password' => $service_fields->ispconfig_password
                         ]
                     )
@@ -1236,7 +1268,7 @@ class Ispconfig extends Module
         $stats = $this->getStats($package, $service);
 
         $this->view->set('stats', $stats);
-        $this->view->set('user_type', $package->meta->type);
+        $this->view->set('user_type', $package->meta->type ?? null);
 
         $this->view->setDefaultView('components' . DS . 'modules' . DS . 'ispconfig' . DS);
 
@@ -1793,6 +1825,20 @@ class Ispconfig extends Module
                     'rule' => [[$this, 'validateNameServers']],
                     'message' => Language::_('Ispconfig.!error.name_servers_valid', true)
                 ]
+            ],
+            'dns_email' => [
+                'valid' => [
+                    'if_set' => true,
+                    'rule' => ['matches', '/^$|^[^@\s]+@[^@\s]+\.[^@\s]+$/'],
+                    'message' => Language::_('Ispconfig.!error.dns_email_valid', true)
+                ]
+            ],
+            'dns_template_id' => [
+                'valid' => [
+                    'if_set' => true,
+                    'rule' => ['matches', '/^([0-9]+)?$/'],
+                    'message' => Language::_('Ispconfig.!error.dns_template_id_valid', true)
+                ]
             ]
         ];
 
@@ -1818,5 +1864,156 @@ class Ispconfig extends Module
         ];
 
         return $rules;
+    }
+
+    /**
+     * Returns the limit_client value of an ISPConfig limits template (0 for "Custom" or on error).
+     *
+     * @param IspconfigApi $api The API instance
+     * @param int $template_id The limits template ID
+     * @return int The number of sub-clients the template allows (-1 for unlimited, 0 for none)
+     */
+    private function getTemplateClientLimit($api, $template_id)
+    {
+        try {
+            $template = $api->getLimitsTemplate($template_id);
+        } catch (\Throwable $e) {
+            $template = null;
+        }
+
+        return (int) ($template['limit_client'] ?? 0);
+    }
+
+    /**
+     * Creates a DNS zone for a new website from an ISPConfig DNS template, when the server has a
+     * DNS zone email set. Skips domains that already have a zone. Failures are logged only.
+     *
+     * @param IspconfigApi $api The API instance
+     * @param stdClass $row The module row (server)
+     * @param int $client_id The ISPConfig client ID that will own the zone
+     * @param string $domain The domain name
+     */
+    private function addDnsZone($api, $row, $client_id, $domain)
+    {
+        $email = trim($row->meta->dns_email ?? '');
+        $name_servers = array_values(array_filter((array) ($row->meta->name_servers ?? [])));
+        if ($email === '' || count($name_servers) < 2 || !$client_id || !$domain) {
+            return;
+        }
+
+        $tag = $row->meta->host_name . '|dns_templatezone_add';
+        try {
+            if ($api->dnsZoneExists($domain) !== false) {
+                $this->log($tag, serialize(['domain' => $domain, 'skipped' => 'zone exists or check failed']), 'output', true);
+                return;
+            }
+
+            $ip = gethostbyname($row->meta->host_name);
+            if (!filter_var($ip, FILTER_VALIDATE_IP, FILTER_FLAG_IPV4)) {
+                throw new Exception('Could not resolve ' . $row->meta->host_name . ' to an IPv4 address');
+            }
+
+            $template_id = (int) ($row->meta->dns_template_id ?? 0) ?: 1;
+            $input = [$client_id, $template_id, $domain, $ip, $name_servers[0], $name_servers[1], $email];
+            $this->log($tag, serialize($input), 'input', true);
+
+            $result = $api->addDnsZoneFromTemplate(...$input);
+            $success = !empty($result) && !isset($result['error']);
+            $this->log($tag, is_array($result) ? serialize($result) : (string) $result, 'output', $success);
+        } catch (\Throwable $e) {
+            $this->log($tag, $e->getMessage(), 'output', false);
+        }
+    }
+
+    /**
+     * KALFA PATCH: suspend/unsuspend a client in ISPConfig.
+     * Finds the client by ispconfig_username, or else by ispconfig_domain (website, then mail domain).
+     * Websites (type vhost; their alias domains go with them): active n/y.
+     * Mailboxes: disableimap/disablepop3/disablesmtp y/n. Delivery stays on, so no mail is lost.
+     * Password fields are sent empty, which ISPConfig treats as "unchanged".
+     */
+    private function kalfaSuspend($service, $suspend)
+    {
+        $tag = $suspend ? 'kalfa_suspend' : 'kalfa_unsuspend';
+        $row = $this->getModuleRow();
+        if (!$row) {
+            $this->Input->setErrors(['module_row' => ['missing' => 'No ISPConfig server for this service']]);
+            return;
+        }
+        $fields = $this->serviceFieldsToObject($service->fields);
+        $username = isset($fields->ispconfig_username) ? trim($fields->ispconfig_username) : '';
+        $domain = isset($fields->ispconfig_domain) ? strtolower(trim($fields->ispconfig_domain)) : '';
+        // Always https: ISPConfig's port 8080 only speaks SSL, whatever the Blesta "use SSL" box says.
+        $base = 'https://' . $row->meta->host_name . ':' . $row->meta->port . '/remote/';
+        $ctx = stream_context_create(['ssl' => ['verify_peer' => false, 'verify_peer_name' => false]]);
+        try {
+            $soap = new SoapClient(null, ['location' => $base . 'index.php', 'uri' => $base,
+                'exceptions' => 1, 'stream_context' => $ctx]);
+            $sid = $soap->login($row->meta->user_name, $row->meta->password);
+
+            $client_id = 0;
+            $group_id = 0;
+            $found_by = '';
+            if ($username !== '') {
+                try {
+                    $client = $soap->client_get_by_username($sid, $username);
+                    if (!empty($client['client_id'])) {
+                        $client_id = $client['client_id'];
+                        $group_id = $soap->client_get_groupid($sid, $client_id);
+                        $found_by = 'username ' . $username;
+                    }
+                } catch (\SoapFault $e) {
+                    // unknown username: fall back to the domain
+                }
+            }
+            if (!$client_id && $domain !== '') {
+                $recs = (array) $soap->sites_web_domain_get($sid, ['domain' => $domain]);
+                if (empty($recs)) {
+                    $recs = (array) $soap->mail_domain_get($sid, ['domain' => $domain]);
+                }
+                if (!empty($recs[0]['sys_groupid'])) {
+                    $group_id = $recs[0]['sys_groupid'];
+                    $client = $soap->client_get_by_groupid($sid, $group_id);
+                    if (!empty($client['client_id'])) {
+                        $client_id = $client['client_id'];
+                        $found_by = 'domain ' . $domain;
+                    }
+                }
+            }
+            if (!$client_id) {
+                throw new Exception("No ISPConfig client found (username '" . $username . "', domain '" . $domain . "')");
+            }
+
+            $done = ['found_by' => $found_by, 'web' => [], 'mail' => []];
+            $want = $suspend ? 'n' : 'y';
+            foreach ((array) $soap->sites_web_domain_get($sid, ['sys_groupid' => $group_id]) as $site) {
+                if ($site['type'] !== 'vhost' || $site['active'] === $want) {
+                    continue;
+                }
+                $site['active'] = $want;
+                $site['stats_password'] = '';
+                $soap->sites_web_domain_update($sid, $client_id, $site['domain_id'], $site);
+                $done['web'][] = $site['domain'];
+            }
+
+            $flag = $suspend ? 'y' : 'n';
+            foreach ((array) $soap->mail_user_get($sid, ['sys_groupid' => $group_id]) as $box) {
+                if ($box['disableimap'] === $flag && $box['disablepop3'] === $flag && $box['disablesmtp'] === $flag) {
+                    continue;
+                }
+                $box['disableimap'] = $flag;
+                $box['disablepop3'] = $flag;
+                $box['disablesmtp'] = $flag;
+                $box['password'] = '';
+                $soap->mail_user_update($sid, $client_id, $box['mailuser_id'], $box);
+                $done['mail'][] = $box['email'];
+            }
+
+            $soap->logout($sid);
+            $this->log($row->meta->host_name . '|' . $tag, serialize($done), 'output', true);
+        } catch (\Throwable $e) {
+            $this->log($row->meta->host_name . '|' . $tag, $e->getMessage(), 'output', false);
+            $this->Input->setErrors(['api' => ['result' => $e->getMessage()]]);
+        }
     }
 }

@@ -380,6 +380,77 @@ class IspconfigApi
     }
 
     /**
+     * Fetches a single limits template by ID.
+     *
+     * @param int $template_id The ISPConfig limits template ID
+     * @return array|null The template row, or null if not found
+     */
+    public function getLimitsTemplate($template_id)
+    {
+        if ((int) $template_id <= 0) {
+            return null;
+        }
+
+        $templates = $this->apiRequest('client_templates_get_all');
+        if (!is_array($templates) || isset($templates['error'])) {
+            return null;
+        }
+
+        foreach ($templates as $template) {
+            if (is_array($template) && (int) ($template['template_id'] ?? 0) === (int) $template_id) {
+                return $template;
+            }
+        }
+
+        return null;
+    }
+
+    /**
+     * Checks whether a DNS zone already exists for the given domain.
+     *
+     * @param string $domain The domain name (without trailing dot)
+     * @return bool|null True if it exists, false if not, null if the check failed
+     */
+    public function dnsZoneExists($domain)
+    {
+        $zones = $this->apiRequest('dns_zone_get', [['origin' => rtrim($domain, '.') . '.']]);
+        if (!is_array($zones) || isset($zones['error'])) {
+            return null;
+        }
+
+        return !empty($zones);
+    }
+
+    /**
+     * Creates a DNS zone for the client from an ISPConfig DNS template.
+     *
+     * @param int $client_id The ISPConfig client ID that will own the zone
+     * @param int $template_id The ISPConfig DNS template ID
+     * @param string $domain The domain name
+     * @param string $ip The IPv4 address for the {IP} placeholder
+     * @param string $ns1 Primary name server (no trailing dot)
+     * @param string $ns2 Secondary name server (no trailing dot)
+     * @param string $email Hostmaster email, e.g. info@example.com
+     * @return mixed The new zone ID, or an array with an 'error' key
+     */
+    public function addDnsZoneFromTemplate($client_id, $template_id, $domain, $ip, $ns1, $ns2, $email)
+    {
+        return $this->apiRequest(
+            'dns_templatezone_add',
+            [
+                $client_id,
+                (int) $template_id,
+                rtrim($domain, '.'),
+                $ip,
+                rtrim($ns1, '.'),
+                rtrim($ns2, '.'),
+                // The SOA mbox field uses dots, the way the ISPConfig zone wizard stores it
+                str_replace('@', '.', trim($email))
+            ]
+        );
+    }
+
+    /**
      * Get the actual server ID.
      *
      * @return int The actual server id

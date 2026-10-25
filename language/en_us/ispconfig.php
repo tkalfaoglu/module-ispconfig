@@ -152,3 +152,12 @@ $lang['Ispconfig.!error.ispconfig_username.test'] = "The username may not begin 
 $lang['Ispconfig.!error.ispconfig_username.length'] = 'The username must be between 1 and 16 characters in length.';
 $lang['Ispconfig.!error.ispconfig_password.valid'] = 'Password must be at least 8 characters in length.';
 $lang['Ispconfig.!error.ispconfig_password.matches'] = 'Password and Confirm Password do not match.';
+
+// KALFA PATCH 2026-10-25: DNS zone creation
+$lang['Ispconfig.add_row.dns_title'] = 'DNS Zones';
+$lang['Ispconfig.edit_row.dns_title'] = 'DNS Zones';
+$lang['Ispconfig.row_meta.dns_email'] = 'DNS Zone Email';
+$lang['Ispconfig.row_meta.dns_email_note'] = 'When set, a DNS zone is created for each new website from the ISPConfig DNS template below, using the first two name servers. Leave empty to not create DNS zones.';
+$lang['Ispconfig.row_meta.dns_template_id'] = 'ISPConfig DNS Template ID';
+$lang['Ispconfig.!error.dns_email_valid'] = 'Please enter a valid DNS zone email address, or leave it empty.';
+$lang['Ispconfig.!error.dns_template_id_valid'] = 'The DNS template ID must be a number.';

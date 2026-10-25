@@ -120,6 +120,27 @@ $this->Form->fieldHidden('account_count', $vars->account_count ?? 0);
     'Ispconfig.edit_row.name_server_btn',
 ); ?></span></a>
 
+<h6 class="form-section-header mt-4"><?php $this->_('Ispconfig.edit_row.dns_title'); ?></h6>
+<div class="mb-3">
+    <label for="dns_email" class="form-label">
+        <?php $this->_('Ispconfig.row_meta.dns_email'); ?>
+    </label>
+    <?php $this->Form->fieldText('dns_email', $vars->dns_email ?? null, [
+        'id' => 'dns_email',
+        'class' => 'form-control',
+    ]); ?>
+    <div class="form-text"><?php $this->_('Ispconfig.row_meta.dns_email_note'); ?></div>
+</div>
+<div class="mb-3">
+    <label for="dns_template_id" class="form-label">
+        <?php $this->_('Ispconfig.row_meta.dns_template_id'); ?>
+    </label>
+    <?php $this->Form->fieldText('dns_template_id', $vars->dns_template_id ?? '1', [
+        'id' => 'dns_template_id',
+        'class' => 'form-control',
+    ]); ?>
+</div>
+
 <h6 class="form-section-header mt-4"><?php $this->_('Ispconfig.edit_row.notes_title'); ?></h6>
 <div class="mb-3">
     <?php $this->Form->fieldTextarea('notes', $vars->notes ?? null, ['id' => 'notes', 'class' => 'form-control']); ?>
