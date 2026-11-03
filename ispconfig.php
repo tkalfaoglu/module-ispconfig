@@ -1156,7 +1156,12 @@ class Ispconfig extends Module
                         [
                             'template_master' => $package_to->meta->package,
                             'limit_client' => $reseller_limit,
-                            'password' => $service_fields->ispconfig_password
+                            // KALFA PATCH 2026-11-03: send an empty password so ISPConfig keeps the
+                            // client's current one. Sending Blesta's stored copy reset the customer's
+                            // panel password on every package change, and for migrated services whose
+                            // stored copy decrypts to garbage it broke the SOAP call
+                            // ("not a valid utf-8 string"). An empty password is not updated by ISPConfig.
+                            'password' => ''
                         ]
                     )
                 );

@@ -255,9 +255,25 @@ class IspconfigApi
     public function updateClient($client_id, $params, $reseller_id = 0)
     {
         $client = $this->getClient($client_id);
+        if (!is_array($client) || isset($client['error'])) {
+            return $client;
+        }
+
+        // KALFA PATCH 2026-11-03: the whole client record is sent back, so one old
+        // latin1/ISO-8859-9 value (e.g. a name from the Plesk era) makes PHP's SoapClient
+        // refuse the call ("not a valid utf-8 string"). Convert such values to UTF-8;
+        // Turkish text is the only non-ASCII content expected here.
+        $record = array_merge($client, $params);
+        foreach ($record as $key => $value) {
+            if (is_string($value) && !mb_check_encoding($value, 'UTF-8')) {
+                $record[$key] = mb_convert_encoding($value, 'UTF-8', 'ISO-8859-9');
+                error_log('ispconfig module: client ' . $client_id . ' field "' . $key
+                    . '" was not valid UTF-8, converted from ISO-8859-9');
+            }
+        }
 
         // Only works in ISPConfig 3.0.3+
-        return $this->apiRequest('client_update', [$client_id, $reseller_id, array_merge($client, $params)]);
+        return $this->apiRequest('client_update', [$client_id, $reseller_id, $record]);
     }
 
     /**
